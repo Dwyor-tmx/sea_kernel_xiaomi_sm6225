@@ -716,111 +716,14 @@ void avg_vruntime_update(struct cfs_rq *cfs_rq, s64 delta)
  * For this to be so, the result of this function must have a left bias.
  */
 u64 avg_vruntime(struct cfs_rq *cfs_rq)
-{
-	struct sched_entity *curr = cfs_rq->curr;
-	s64 avg = cfs_rq->avg_vruntime;
-	long load = cfs_rq->avg_load;
-
-	if (curr && curr->on_rq) {
-		unsigned long weight = scale_load_down(curr->load.weight);
-
-		avg += entity_key(cfs_rq, curr) * weight;
-		load += weight;
-	}
-
-	if (load) {
-		/* sign flips effective floor / ceil */
-		if (avg < 0)
-			avg -= (load - 1);
-		avg = div_s64(avg, load);
-	}
-
-	return cfs_rq->min_vruntime + avg;
-}
-
-/*
- * lag_i = S - s_i = w_i * (V - v_i)
- *
- * However, since V is approximated by the weighted average of all entities it
- * is possible -- by addition/removal/reweight to the tree -- to move V around
- * and end up with a larger lag than we started with.
- *
- * Limit this to either double the slice length with a minimum of TICK_NSEC
- * since that is the timing granularity.
- *
- * EEVDF gives the following limit for a steady state system:
- *
- *   -r_max < lag < max(r_max, q)
- *
- * XXX could add max_slice to the augmented data to track this.
- */
-void update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
-{
-	s64 lag, limit;
-
-	SCHED_WARN_ON(!se->on_rq);
-	lag = avg_vruntime(cfs_rq) - se->vruntime;
-
-	limit = calc_delta_fair(max_t(u64, 2*se->slice, TICK_NSEC), se);
-	se->vlag = clamp(lag, -limit, limit);
-}
-
-/*
- * Entity is eligible once it received less service than it ought to have,
- * eg. lag >= 0.
- *
- * lag_i = S - s_i = w_i*(V - v_i)
- *
- * lag_i >= 0 -> V >= v_i
- *
- *     \Sum (v_i - v)*w_i
- * V = ------------------ + v
- *          \Sum w_i
- *
- * lag_i >= 0 -> \Sum (v_i - v)*w_i >= (v_i - v)*(\Sum w_i)
- *
- * Note: using 'avg_vruntime() > se->vruntime' is inacurate due
- *       to the loss in precision caused by the division.
- */
-static int vruntime_eligible(struct cfs_rq *cfs_rq, u64 vruntime)
-{
-	struct sched_entity *curr = cfs_rq->curr;
-	s64 avg = cfs_rq->avg_vruntime;
-	long load = cfs_rq->avg_load;
-
-	if (curr && curr->on_rq) {
-		unsigned long weight = scale_load_down(curr->load.weight);
-
-		avg += entity_key(cfs_rq, curr) * weight;
-		load += weight;
-	}
-
-	return avg >= (s64)(vruntime - cfs_rq->min_vruntime) * load;
-}
-
-int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
-{
-	return vruntime_eligible(cfs_rq, se->vruntime);
-}
-
-static u64 __update_min_vruntime(struct cfs_rq *cfs_rq, u64 vruntime)
-{
-	u64 min_vruntime = cfs_rq->min_vruntime;
-	/*
-	 * open coded max_vruntime() to allow updating avg_vruntime
-	 */
-	s64 delta = (s64)(vruntime - min_vruntime);
-	if (delta > 0) {
-		avg_vruntime_update(cfs_rq, delta);
-		min_vruntime = vruntime;
-	}
-	return min_vruntime;
-}
+#define __node_2_se(node) \
+	rb_entry((node), struct sched_entity, run_node)
 
 static void update_min_vruntime(struct cfs_rq *cfs_rq)
 {
-	struct sched_entity *se = __pick_root_entity(cfs_rq);
 	struct sched_entity *curr = cfs_rq->curr;
+	struct rb_node *leftmost = rb_first_cached(&cfs_rq->tasks_timeline);
+
 	u64 vruntime = cfs_rq->min_vruntime;
 
 	if (curr) {
@@ -830,7 +733,9 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 			curr = NULL;
 	}
 
-	if (se) {
+	if (leftmost) { /* non-empty tree */
+		struct sched_entity *se = __node_2_se(leftmost);
+
 		if (!curr)
 			vruntime = se->min_vruntime;
 		else
@@ -842,54 +747,22 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 		      max_vruntime(cfs_rq->min_vruntime, vruntime));
 }
 
+static inline bool __entity_less(struct rb_node *a, const struct rb_node *b)
+{
+	return entity_before(__node_2_se(a), __node_2_se(b));
+}
+
 /*
  * Enqueue an entity into the rb-tree:
  */
 static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	struct rb_node **link = &cfs_rq->tasks_timeline.rb_root.rb_node;
-	struct rb_node *parent = NULL;
-	struct sched_entity *entry;
-	bool leftmost = true;
-
-	/*
-	 * Find the right place in the rbtree:
-	 */
-	while (*link) {
-		parent = *link;
-		entry = rb_entry(parent, struct sched_entity, run_node);
-		/*
-		 * We dont care about collisions. Nodes with
-		 * the same key stay together.
-		 */
-		if (entity_before(se, entry)) {
-			link = &parent->rb_left;
-		} else {
-			link = &parent->rb_right;
-			leftmost = false;
-		}
-	}
-
-	rb_link_node(&se->run_node, parent, link);
-	rb_insert_color_cached(&se->run_node,
-			       &cfs_rq->tasks_timeline, leftmost);
+	rb_add_cached(&se->run_node, &cfs_rq->tasks_timeline, __entity_less);
 }
 
 static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
-				  &min_vruntime_cb);
-	avg_vruntime_sub(cfs_rq, se);
-}
-
-struct sched_entity *__pick_root_entity(struct cfs_rq *cfs_rq)
-{
-	struct rb_node *root = cfs_rq->tasks_timeline.rb_root.rb_node;
-
-	if (!root)
-		return NULL;
-
-	return __node_2_se(root);
+	rb_erase_cached(&se->run_node, &cfs_rq->tasks_timeline);
 }
 
 struct sched_entity *__pick_first_entity(struct cfs_rq *cfs_rq)
@@ -910,104 +783,6 @@ static struct sched_entity *__pick_next_entity(struct sched_entity *se)
 		return NULL;
 
 	return __node_2_se(next);
-}
-
-static struct sched_entity *pick_cfs(struct cfs_rq *cfs_rq, struct sched_entity *curr)
-{
-	struct sched_entity *left = __pick_first_entity(cfs_rq);
-
-	/*
-	 * If curr is set we have to see if its left of the leftmost entity
-	 * still in the tree, provided there was anything in the tree at all.
-	 */
-	if (!left || (curr && entity_before(curr, left)))
-		left = curr;
-
-	return left;
-}
-
-/*
- * Earliest Eligible Virtual Deadline First
- *
- * In order to provide latency guarantees for different request sizes
- * EEVDF selects the best runnable task from two criteria:
- *
- *  1) the task must be eligible (must be owed service)
- *
- *  2) from those tasks that meet 1), we select the one
- *     with the earliest virtual deadline.
- *
- * We can do this in O(log n) time due to an augmented RB-tree. The
- * tree keeps the entries sorted on deadline, but also functions as a
- * heap based on the vruntime by keeping:
- *
- *  se->min_vruntime = min(se->vruntime, se->{left,right}->min_vruntime)
- *
- * Which allows tree pruning through eligibility.
- */
-static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
-{
-	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
-	struct sched_entity *se = __pick_first_entity(cfs_rq);
-	struct sched_entity *curr = cfs_rq->curr;
-	struct sched_entity *best = NULL;
-
-	/*
-	 * We can safely skip eligibility check if there is only one entity
-	 * in this cfs_rq, saving some cycles.
-	 */
-	if (cfs_rq->nr_running == 1)
-		return curr && curr->on_rq ? curr : se;
-
-	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
-		curr = NULL;
-
-	/*
-	 * Once selected, run a task until it either becomes non-eligible or
-	 * until it gets a new slice. See the HACK in set_next_entity().
-	 */
-	if (sched_feat(RUN_TO_PARITY) && curr && curr->vlag == curr->deadline)
-		return curr;
-
-	/* Pick the leftmost entity if it's eligible */
-	if (se && entity_eligible(cfs_rq, se)) {
-		best = se;
-		goto found;
-	}
-
-	/* Heap search for the EEVD entity */
-	while (node) {
-		struct rb_node *left = node->rb_left;
-
-		/*
-		 * Eligible entities in left subtree are always better
-		 * choices, since they have earlier deadlines.
-		 */
-		if (left && vruntime_eligible(cfs_rq,
-					__node_2_se(left)->min_vruntime)) {
-			node = left;
-			continue;
-		}
-
-		se = __node_2_se(node);
-
-		/*
-		 * The left subtree either is empty or has no eligible
-		 * entity, so check the current node since it is the one
-		 * with earliest deadline that might be eligible.
-		 */
-		if (entity_eligible(cfs_rq, se)) {
-			best = se;
-			break;
-		}
-
-		node = node->rb_right;
-	}
-found:
-	if (!best || (curr && entity_before(curr, best)))
-		best = curr;
-
-	return best;
 }
 
 #ifdef CONFIG_SCHED_DEBUG
