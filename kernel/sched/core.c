@@ -1530,7 +1530,7 @@ static void __init init_uclamp_rq(struct rq *rq)
 		};
 	}
 
-	rq->uclamp_flags = UCLAMP_FLAG_IDLE;
+	rq->uclamp_flags = 0;
 }
 
 static void __init init_uclamp(void)
@@ -1538,6 +1538,8 @@ static void __init init_uclamp(void)
 	struct uclamp_se uc_max = {};
 	enum uclamp_id clamp_id;
 	int cpu;
+
+	mutex_init(&uclamp_mutex);
 
 	for_each_possible_cpu(cpu)
 		init_uclamp_rq(cpu_rq(cpu));
