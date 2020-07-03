@@ -1563,9 +1563,6 @@ void activate_task(struct rq *rq, struct task_struct *p, int flags)
 
 void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 {
-	if (flags & DEQUEUE_SLEEP)
-		clear_ed_task(p, rq);
-
 	dequeue_task(rq, p, flags);
 }
 
@@ -3021,7 +3018,12 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags,
 	 */
 	smp_rmb();
 	if (READ_ONCE(p->on_rq) && ttwu_remote(p, wake_flags))
-		goto unlock;
+		goto stat;
+
+	if (p->in_iowait) {
+		delayacct_blkio_end(p);
+		atomic_dec(&task_rq(p)->nr_iowait);
+	}
 
 #ifdef CONFIG_SMP
 	/*
@@ -4572,6 +4574,9 @@ static void __sched notrace __schedule(bool preempt)
 	local_irq_disable();
 	rcu_note_context_switch(preempt);
 
+	/* See deactivate_task() below. */
+	prev_state = prev->state;
+
 	/*
 	 * Make sure that signal_pending_state()->signal_pending() below
 	 * can't be reordered with __set_current_state(TASK_INTERRUPTIBLE)
@@ -4595,16 +4600,11 @@ static void __sched notrace __schedule(bool preempt)
 	update_rq_clock(rq);
 
 	switch_count = &prev->nivcsw;
-
 	/*
-	 * We must load prev->state once (task_struct::state is volatile), such
-	 * that:
-	 *
-	 *  - we form a control dependency vs deactivate_task() below.
-	 *  - ptrace_{,un}freeze_traced() can change ->state underneath us.
+	 * We must re-load prev->state in case ttwu_remote() changed it
+	 * before we acquired rq->lock.
 	 */
-	prev_state = prev->state;
-	if (!preempt && prev_state) {
+	if (!preempt && prev_state && prev_state == prev->state) {
 		if (unlikely(signal_pending_state(prev_state, prev))) {
 			prev->state = TASK_RUNNING;
 		} else {
@@ -4618,12 +4618,10 @@ static void __sched notrace __schedule(bool preempt)
 
 			/*
 			 * __schedule()			ttwu()
-			 *   prev_state = prev->state;    if (p->on_rq && ...)
-			 *   if (prev_state)		    goto out;
-			 *     p->on_rq = 0;		  smp_acquire__after_ctrl_dep();
-			 *				  p->state = TASK_WAKING
-			 *
-			 * Where __schedule() and ttwu() have matching control dependencies.
+			 *   prev_state = prev->state;	  if (READ_ONCE(p->on_rq) && ...)
+			 *   LOCK rq->lock		    goto out;
+			 *   smp_mb__after_spinlock();	  smp_acquire__after_ctrl_dep();
+			 *   p->on_rq = 0;		  p->state = TASK_WAKING;
 			 *
 			 * After this, schedule() must not care about p->state any more.
 			 */
