@@ -839,52 +839,40 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 
 	/* ensure we never gain time by being placed backwards. */
 	u64_u32_store(cfs_rq->min_vruntime,
-		      __update_min_vruntime(cfs_rq, vruntime));
+		      max_vruntime(cfs_rq->min_vruntime, vruntime));
 }
-
-static inline bool __entity_less(struct rb_node *a, const struct rb_node *b)
-{
-	return entity_before(__node_2_se(a), __node_2_se(b));
-}
-
-#define vruntime_gt(field, lse, rse) ({ (s64)((lse)->field - (rse)->field) > 0; })
-
-static inline void __min_vruntime_update(struct sched_entity *se, struct rb_node *node)
-{
-	if (node) {
-		struct sched_entity *rse = __node_2_se(node);
-		if (vruntime_gt(min_vruntime, se, rse))
-			se->min_vruntime = rse->min_vruntime;
-	}
-}
-
-/*
- * se->min_vruntime = min(se->vruntime, {left,right}->min_vruntime)
- */
-static inline bool min_vruntime_update(struct sched_entity *se, bool exit)
-{
-	u64 old_min_vruntime = se->min_vruntime;
-	struct rb_node *node = &se->run_node;
-
-	se->min_vruntime = se->vruntime;
-	__min_vruntime_update(se, node->rb_right);
-	__min_vruntime_update(se, node->rb_left);
-
-	return se->min_vruntime == old_min_vruntime;
-}
-
-RB_DECLARE_CALLBACKS(static, min_vruntime_cb, struct sched_entity,
-		     run_node, min_vruntime, min_vruntime_update);
 
 /*
  * Enqueue an entity into the rb-tree:
  */
 static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	avg_vruntime_add(cfs_rq, se);
-	se->min_vruntime = se->vruntime;
-	rb_add_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
-				__entity_less, &min_vruntime_cb);
+	struct rb_node **link = &cfs_rq->tasks_timeline.rb_root.rb_node;
+	struct rb_node *parent = NULL;
+	struct sched_entity *entry;
+	bool leftmost = true;
+
+	/*
+	 * Find the right place in the rbtree:
+	 */
+	while (*link) {
+		parent = *link;
+		entry = rb_entry(parent, struct sched_entity, run_node);
+		/*
+		 * We dont care about collisions. Nodes with
+		 * the same key stay together.
+		 */
+		if (entity_before(se, entry)) {
+			link = &parent->rb_left;
+		} else {
+			link = &parent->rb_right;
+			leftmost = false;
+		}
+	}
+
+	rb_link_node(&se->run_node, parent, link);
+	rb_insert_color_cached(&se->run_node,
+			       &cfs_rq->tasks_timeline, leftmost);
 }
 
 static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
@@ -8820,11 +8808,28 @@ sd_loop:
  */
 static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 {
-	struct sched_entity *se = &p->se;
+	/*
+	 * As blocked tasks retain absolute vruntime the migration needs to
+	 * deal with this by subtracting the old and adding the new
+	 * min_vruntime -- the latter is done by enqueue_entity() when placing
+	 * the task on the new runqueue.
+	 */
+	if (p->state == TASK_WAKING) {
+		struct sched_entity *se = &p->se;
+		struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
-	if (!task_on_rq_migrating(p)) {
-		remove_entity_load_avg(se);
+		se->vruntime -= u64_u32_load(cfs_rq->min_vruntime);
+	}
 
+	if (p->on_rq == TASK_ON_RQ_MIGRATING) {
+		/*
+		 * In case of TASK_ON_RQ_MIGRATING we in fact hold the 'old'
+		 * rq->lock and can modify state directly.
+		 */
+		lockdep_assert_held(&task_rq(p)->lock);
+		detach_entity_cfs_rq(&p->se);
+
+	} else {
 		/*
 		 * We are supposed to update the task to "current" time, then
 		 * its up to date and ready to go to new CPU/cfs_rq. But we
