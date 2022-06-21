@@ -8285,112 +8285,31 @@ calc_energy(struct em_calc *ec, struct task_struct *p, struct perf_domain *pd,
 	 */
 	util_cfs = cpu_util_next(cpu, p, dst);
 
-	/*
-	 * Busy time computation: utilization clamping is not required since the
-	 * ratio (sum_util / cpu_capacity) is already enough to scale the EM
-	 * reported power consumption at the (eventually clamped) cpu_capacity.
-	 */
-	ec->energy_util = schedutil_cpu_util(cpu, util_cfs, cpu_cap,
-						       ENERGY_UTIL, NULL);
+			/*
+			 * Busy time computation: utilization clamping is not
+			 * required since the ratio (sum_util / cpu_capacity)
+			 * is already enough to scale the EM reported power
+			 * consumption at the (eventually clamped) cpu_capacity.
+			 */
+			sum_util += schedutil_cpu_util(cpu, util_cfs, ENERGY_UTIL, NULL);
 
-	/*
-	 * Performance domain frequency: utilization clamping must be considered
-	 * since it affects the selection of the performance domain frequency.
-	 * NOTE: in case RT tasks are running, by default the FREQUENCY_UTIL's
-	 * utilization can be max OPP.
-	 */
-	ec->cpu_util = schedutil_cpu_util(cpu, util_cfs, cpu_cap,
-						    FREQUENCY_UTIL,
-						    cpu == dst ? p : NULL);
-}
-
-/*
- * @energy is expected to be initialized to zero for each CPU in @dst_mask.
- *
- * When @p moves to a new cluster, it affects power for both its old cluster and
- * new cluster. All CPUs in the source and destination clusters need to have
- * energy recomputed. But the energy calculation can be cached for any CPUs in
- * these clusters which are neither the source CPU nor destination CPU. If a CPU
- * is the one that @p moves off of, then it needs to have energy recomputed with
- * @p removed. If a CPU is the one that @p moves onto, then it needs to have
- * energy recomputed with @p added. But the other CPUs in the cluster only need
- * to have energy recomputed due to the effect of schedutil increasing CPU
- * frequency for the destination CPU cluster and/or decreasing CPU frequency for
- * the source CPU cluster. The other CPUs in the source and destination clusters
- * are otherwise unaffected, and thus their energy calculation can be cached.
- */
-static void
-compute_energy_change(struct task_struct *p, struct perf_domain *pd, int src,
-		      const cpumask_t *dst_mask, unsigned long energy[NR_CPUS])
-{
-	/*
-	 * cached_calc[0] is for when @p moves _to_ a given CPU's cluster.
-	 * cached_calc[1] is for when @p moves _from_ a given CPU's cluster.
-	 */
-	static DEFINE_PER_CPU_ALIGNED(struct em_calc [2][NR_CPUS], cached_calc);
-	cpumask_t *cmask, cached_mask[2] = {};
-	struct em_calc *cache, *ec, tmp_ec;
-	bool from, no_cache;
-	unsigned long cap;
-	int cpu, dst;
-
-	for (; pd; pd = pd->next) {
-		const cpumask_t *pd_mask = perf_domain_span(pd);
-
-		/*
-		 * The energy model mandates all the CPUs of a performance
-		 * domain have the same capacity.
-		 */
-		cap = arch_scale_cpu_capacity(cpumask_first(pd_mask));
-
-		/*
-		 * The cache index is 0 if @p is moving to this cluster, and 1
-		 * if @p is moving away from this cluster.
-		 */
-		from = cpumask_test_cpu(src, pd_mask);
-		cache = this_cpu_ptr(cached_calc)[from];
-		cmask = &cached_mask[from];
-
-		/* Calculate energy for each CPU @dst if @p moves to @dst */
-		for_each_cpu(dst, dst_mask) {
-			unsigned long sum_util = 0;
-			unsigned int max_util = 0;
-
-			/* Compute @p's energy change for this cluster's CPUs */
-			for_each_cpu_and(cpu, pd_mask, cpu_online_mask) {
-				/*
-				 * Calculate the effect of @p moving to or from
-				 * this specific CPU. This calculation is unique
-				 * for the source and destination CPU and thus
-				 * cannot be cached. This is O(2*CPU_NR).
-				 *
-				 * Otherwise, calculate the effect of @p's
-				 * migration to @dst on this CPU that's neither
-				 * the source nor destination CPU, but is part
-				 * of the source or destination cluster. It is
-				 * therefore affected by CPU frequency changes
-				 * for its cluster. This calculation can be
-				 * cached, as mentioned in the large comment
-				 * above. This is also O(2*CPU_NR).
-				 */
-				no_cache = cpu == dst || cpu == src;
-				ec = no_cache ? &tmp_ec : &cache[cpu];
-				if (no_cache || !cpumask_test_cpu(cpu, cmask)) {
-					/* Get @cpu's energy if @p is on @dst */
-					calc_energy(ec, p, pd, cap, cpu, dst);
-					if (!no_cache)
-						__cpumask_set_cpu(cpu, cmask);
-				}
-
-				sum_util += ec->energy_util;
-				if (ec->cpu_util > max_util)
-					max_util = ec->cpu_util;
-			}
-
-			/* Add in this cluster's energy impact for @p on @dst */
-			energy[dst] += em_pd_energy(pd->em_pd, max_util, sum_util);
+			/*
+			 * Performance domain frequency: utilization clamping
+			 * must be considered since it affects the selection
+			 * of the performance domain frequency.
+			 * NOTE: in case RT tasks are running, by default the
+			 * FREQUENCY_UTIL's utilization can be max OPP.
+			 */
+			tsk = cpu == dst_cpu ? p : NULL;
+			cpu_util = schedutil_cpu_util(cpu, util_cfs, FREQUENCY_UTIL, tsk);
+#endif
+			max_util = max(max_util, cpu_util);
 		}
+
+		energy += em_pd_energy(pd->em_pd, max_util, sum_util);
 	}
+
+	return energy;
 }
 
 static void select_cpu_candidates(struct sched_domain *sd, cpumask_t *cpus,
