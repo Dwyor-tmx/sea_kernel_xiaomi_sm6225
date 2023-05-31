@@ -891,48 +891,6 @@ static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	return slice;
 }
 
-static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
-
-/*
- * XXX: strictly: vd_i += N*r_i/w_i such that: vd_i > ve_i
- * this is probably good enough.
- */
-static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
-{
-	if ((s64)(se->vruntime - se->deadline) < 0)
-		return;
-
-	if (sched_feat(EEVDF)) {
-		/*
-		 * For EEVDF the virtual time slope is determined by w_i (iow.
-		 * nice) while the request time r_i is determined by
-		 * sysctl_sched_min_granularity.
-		 */
-		se->slice = sysctl_sched_min_granularity;
-
-		/*
-		 * The task has consumed its request, reschedule.
-		 */
-		if (cfs_rq->nr_running > 1) {
-			resched_curr(rq_of(cfs_rq));
-			clear_buddies(cfs_rq, se);
-		}
-	} else {
-		/*
-		 * When many tasks blow up the sched_period; it is possible
-		 * that sched_slice() reports unusually large results (when
-		 * many tasks are very light for example). Therefore impose a
-		 * maximum.
-		 */
-		se->slice = min_t(u64, sched_slice(cfs_rq, se), sysctl_sched_latency);
-	}
-
-	/*
-	 * EEVDF: vd_i = ve_i + r_i / w_i
-	 */
-	se->deadline = se->vruntime + calc_delta_fair(se->slice, se);
-}
-
 #include "pelt.h"
 #ifdef CONFIG_SMP
 
@@ -4421,25 +4379,11 @@ static inline bool entity_is_long_sleeper(struct sched_entity *se)
 static void
 place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 {
-	u64 vslice, vruntime = avg_vruntime(cfs_rq);
-	s64 lag = 0;
+	u64 vruntime = avg_vruntime(cfs_rq);
 
-	se->slice = sysctl_sched_min_granularity;
-	vslice = calc_delta_fair(se->slice, se);
-
-	/*
-	 * Due to how V is constructed as the weighted average of entities,
-	 * adding tasks with positive lag, or removing tasks with negative lag
-	 * will move 'time' backwards, this can screw around with the lag of
-	 * other tasks.
-	 *
-	 * EEVDF: placement strategy #1 / #2
-	 */
-	if (sched_feat(PLACE_LAG) && cfs_rq->nr_running) {
-		struct sched_entity *curr = cfs_rq->curr;
-		unsigned long load;
-
-		lag = se->vlag;
+	/* sleeps up to a single latency don't count. */
+	if (!initial) {
+		unsigned long thresh = sysctl_sched_latency;
 
 		/*
 		 * If we want to place a task and preserve lag, we have to
