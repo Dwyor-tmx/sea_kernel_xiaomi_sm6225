@@ -726,6 +726,15 @@ u64 avg_vruntime(struct cfs_rq *cfs_rq)
 	return cfs_rq->min_vruntime + avg;
 }
 
+/*
+ * lag_i = S - s_i = w_i * (V - v_i)
+ */
+void update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	SCHED_WARN_ON(!se->on_rq);
+	se->vlag = avg_vruntime(cfs_rq) - se->vruntime;
+}
+
 static u64 __update_min_vruntime(struct cfs_rq *cfs_rq, u64 vruntime)
 {
 	u64 min_vruntime = cfs_rq->min_vruntime;
@@ -3150,16 +3159,6 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 		 * we need to scale se->vlag when w_i changes.
 		 */
 		se->vlag = div_s64(se->vlag * old_weight, weight);
-	} else {
-		s64 deadline = se->deadline - se->vruntime;
-		/*
-		 * When the weight changes, the virtual time slope changes and
-		 * we should adjust the relative virtual deadline accordingly.
-		 */
-		deadline = div_s64(deadline * old_weight, weight);
-		se->deadline = se->vruntime + deadline;
-		if (se != cfs_rq->curr)
-			min_vruntime_cb_propagate(&se->run_node, NULL);
 	}
 
 #ifdef CONFIG_SMP
@@ -4380,10 +4379,21 @@ static void
 place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 {
 	u64 vruntime = avg_vruntime(cfs_rq);
+	s64 lag = 0;
 
-	/* sleeps up to a single latency don't count. */
-	if (!initial) {
-		unsigned long thresh = sysctl_sched_latency;
+	/*
+	 * Due to how V is constructed as the weighted average of entities,
+	 * adding tasks with positive lag, or removing tasks with negative lag
+	 * will move 'time' backwards, this can screw around with the lag of
+	 * other tasks.
+	 *
+	 * EEVDF: placement strategy #1 / #2
+	 */
+	if (sched_feat(PLACE_LAG) && cfs_rq->nr_running > 1) {
+		struct sched_entity *curr = cfs_rq->curr;
+		unsigned long load;
+
+		lag = se->vlag;
 
 		/*
 		 * If we want to place a task and preserve lag, we have to
@@ -4439,28 +4449,49 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 		 */
 		load = cfs_rq->avg_load;
 		if (curr && curr->on_rq)
-			load += scale_load_down(curr->load.weight);
+			load += curr->load.weight;
 
-		lag *= load + scale_load_down(se->load.weight);
+		lag *= load + se->load.weight;
 		if (WARN_ON_ONCE(!load))
 			load = 1;
 		lag = div_s64(lag, load);
+
+		vruntime -= lag;
 	}
 
-	se->vruntime = vruntime - lag;
+	if (sched_feat(FAIR_SLEEPERS)) {
 
-	/*
-	 * When joining the competition; the exisiting tasks will be,
-	 * on average, halfway through their slice, as such start tasks
-	 * off with half a slice to ease into the competition.
-	 */
-	if (sched_feat(PLACE_DEADLINE_INITIAL) && initial)
-		vslice /= 2;
+		/* sleeps up to a single latency don't count. */
+		if (!initial) {
+			unsigned long thresh;
 
-	/*
-	 * EEVDF: vd_i = ve_i + r_i/w_i
-	 */
-	se->deadline = se->vruntime + vslice;
+			if (se_is_idle(se))
+				thresh = sysctl_sched_min_granularity;
+			else
+				thresh = sysctl_sched_latency;
+
+			/*
+			 * Halve their sleep time's effect, to allow
+			 * for a gentler effect of sleepers:
+			 */
+			if (sched_feat(GENTLE_FAIR_SLEEPERS))
+				thresh >>= 1;
+
+			vruntime -= thresh;
+		}
+
+		/*
+		 * Pull vruntime of the entity being placed to the base level of
+		 * cfs_rq, to prevent boosting it if placed backwards.  If the entity
+		 * slept for a long time, don't even try to compare its vruntime with
+		 * the base as it may be too far off and the comparison may get
+		 * inversed due to s64 overflow.
+		 */
+		if (!entity_is_long_sleeper(se))
+			vruntime = max_vruntime(se->vruntime, vruntime);
+	}
+
+	se->vruntime = vruntime;
 }
 
 static void check_enqueue_throttle(struct cfs_rq *cfs_rq);
@@ -4621,7 +4652,9 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 	clear_buddies(cfs_rq, se);
 
-	update_entity_lag(cfs_rq, se);
+	if (flags & DEQUEUE_SLEEP)
+		update_entity_lag(cfs_rq, se);
+
 	if (se != cfs_rq->curr)
 		__dequeue_entity(cfs_rq, se);
 	se->on_rq = 0;
