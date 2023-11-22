@@ -8263,27 +8263,49 @@ cpu_util_next_walt(int cpu, struct task_struct *p, int dst_cpu)
 }
 #endif
 
-struct em_calc {
-	unsigned long energy_util;
-	unsigned long cpu_util;
-};
-
-static void
-calc_energy(struct em_calc *ec, struct task_struct *p, struct perf_domain *pd,
-	    unsigned long cpu_cap, int cpu, int dst)
+/*
+ * compute_energy(): Estimates the energy that would be consumed if @p was
+ * migrated to @dst_cpu. compute_energy() predicts what will be the utilization
+ * landscape of the * CPUs after the task migration, and uses the Energy Model
+ * to compute what would be the energy if we decided to actually migrate that
+ * task.
+ */
+static long
+compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 {
-	unsigned int util_cfs;
+	unsigned int max_util, cpu_util, cpu_cap;
+	unsigned long sum_util, energy = 0;
+	unsigned long min, max;
+	int cpu;
 
-	/*
-	 * The capacity state of CPUs of the current rd can be driven by CPUs of
-	 * another rd if they belong to the same performance domain. So, account
-	 * for the utilization of these CPUs too by masking pd with
-	 * cpu_online_mask instead of the rd span.
-	 *
-	 * If an entire performance domain is outside of the current rd, it will
-	 * not appear in its pd list and will not be accounted.
-	 */
-	util_cfs = cpu_util_next(cpu, p, dst);
+	for (; pd; pd = pd->next) {
+		struct cpumask *pd_mask = perf_domain_span(pd);
+
+		/*
+		 * The energy model mandates all the CPUs of a performance
+		 * domain have the same capacity.
+		 */
+		cpu_cap = arch_scale_cpu_capacity(cpumask_first(pd_mask));
+		max_util = sum_util = 0;
+
+		/*
+		 * The capacity state of CPUs of the current rd can be driven by
+		 * CPUs of another rd if they belong to the same performance
+		 * domain. So, account for the utilization of these CPUs too
+		 * by masking pd with cpu_online_mask instead of the rd span.
+		 *
+		 * If an entire performance domain is outside of the current rd,
+		 * it will not appear in its pd list and will not be accounted
+		 * by compute_energy().
+		 */
+		for_each_cpu_and(cpu, pd_mask, cpu_online_mask) {
+#ifdef CONFIG_SCHED_WALT
+			cpu_util = cpu_util_next_walt(cpu, p, dst_cpu);
+			sum_util += cpu_util;
+#else
+			unsigned int util_cfs;
+
+			util_cfs = cpu_util_next(cpu, p, dst_cpu);
 
 			/*
 			 * Busy time computation: utilization clamping is not
@@ -8291,7 +8313,7 @@ calc_energy(struct em_calc *ec, struct task_struct *p, struct perf_domain *pd,
 			 * is already enough to scale the EM reported power
 			 * consumption at the (eventually clamped) cpu_capacity.
 			 */
-			sum_util += schedutil_cpu_util(cpu, util_cfs, ENERGY_UTIL, NULL);
+			sum_util += schedutil_cpu_util(cpu, util_cfs, NULL, NULL);
 
 			/*
 			 * Performance domain frequency: utilization clamping
@@ -8300,8 +8322,15 @@ calc_energy(struct em_calc *ec, struct task_struct *p, struct perf_domain *pd,
 			 * NOTE: in case RT tasks are running, by default the
 			 * FREQUENCY_UTIL's utilization can be max OPP.
 			 */
-			tsk = cpu == dst_cpu ? p : NULL;
-			cpu_util = schedutil_cpu_util(cpu, util_cfs, FREQUENCY_UTIL, tsk);
+			cpu_util = schedutil_cpu_util(cpu, util_cfs, &min, &max);
+			/* Task's uclamp can modify min and max value */
+			if (uclamp_is_used()) {
+				min = max(min, uclamp_eff_value(p, UCLAMP_MIN));
+
+				max = max(max, uclamp_eff_value(p, UCLAMP_MAX));
+			}
+
+			cpu_util = sugov_effective_cpu_perf(cpu, cpu_util, min, max);
 #endif
 			max_util = max(max_util, cpu_util);
 		}
