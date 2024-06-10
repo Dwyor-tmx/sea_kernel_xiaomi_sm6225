@@ -905,13 +905,6 @@ static int qcom_cpufreq_hw_driver_probe(struct platform_device *pdev)
 		return rc;
 	}
 
-
-	rc = cpufreq_register_driver(&cpufreq_qcom_hw_driver);
-	if (rc) {
-		dev_err(&pdev->dev, "CPUFreq HW driver failed to register\n");
-		return rc;
-	}
-
 	dev_dbg(&pdev->dev, "QCOM CPUFreq HW driver initialized\n");
 	of_platform_populate(pdev->dev.of_node, NULL, NULL, &pdev->dev);
 
