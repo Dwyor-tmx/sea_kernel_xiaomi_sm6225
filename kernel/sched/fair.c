@@ -4638,7 +4638,7 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 	u64 vslice, vruntime = avg_vruntime(cfs_rq);
 	s64 lag = 0;
 
-	se->slice = sysctl_sched_base_slice;
+	se->slice = sysctl_sched_min_granularity;
 	vslice = calc_delta_fair(se->slice, se);
 
 	/*
