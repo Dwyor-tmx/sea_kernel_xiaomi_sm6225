@@ -3415,7 +3415,7 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 		deadline = div_s64(deadline * old_weight, weight);
 		se->deadline = se->vruntime + deadline;
 		if (se != cfs_rq->curr)
-			min_deadline_cb_propagate(&se->run_node, NULL);
+			min_vruntime_cb_propagate(&se->run_node, NULL);
 	}
 
 #ifdef CONFIG_SMP
@@ -4779,11 +4779,8 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 *   - Add its new weight to cfs_rq->load.weight
 	 */
 	update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH);
-<<<<<<< HEAD
 	update_cfs_group(se);
 	enqueue_runnable_load_avg(cfs_rq, se);
-=======
-	se_update_runnable(se);
 	/*
 	 * XXX update_load_avg() above will have attached us to the pelt sum;
 	 * but update_cfs_group() here will re-adjust the weight and have to
@@ -4798,7 +4795,6 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	if (!curr)
 		place_entity(cfs_rq, se, 0);
 
->>>>>>> ba7fd5cc3001 (sched/smp: Use lag to simplify cross-runqueue placement)
 	account_entity_enqueue(cfs_rq, se);
 
 	if (flags & ENQUEUE_WAKEUP)
@@ -13037,7 +13033,6 @@ static void task_fork_fair(struct task_struct *p)
 	if (curr)
 		update_curr(cfs_rq);
 	place_entity(cfs_rq, se, 1);
-<<<<<<< HEAD
 
 	if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
 		/*
@@ -13049,8 +13044,6 @@ static void task_fork_fair(struct task_struct *p)
 	}
 
 	se->vruntime -= cfs_rq->min_vruntime;
-=======
->>>>>>> ba7fd5cc3001 (sched/smp: Use lag to simplify cross-runqueue placement)
 	rq_unlock(rq, &rf);
 }
 
