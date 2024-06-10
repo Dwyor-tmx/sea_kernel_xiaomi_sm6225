@@ -754,7 +754,7 @@ stackp-flags-$(CONFIG_STACKPROTECTOR_STRONG)      := -fstack-protector-strong
 KBUILD_CFLAGS += $(stackp-flags-y)
 
 ifeq ($(cc-name),clang)
-KBUILD_LDFLAGS  += -O3 --plugin-opt=O3 KBUILD_CFLAGS   += -ffp-contract=fast
+KBUILD_CFLAGS   += -ffp-contract=fast
 #Enable hot cold split optimization
 KBUILD_CFLAGS   += -mllvm -hot-cold-split=true
 KBUILD_CFLAGS   += -O3 -march=armv8-a+lse+crypto+crc+dotprod -fno-stack-protector -fcf-protection=none -mcpu=cortex-a73+crc+crypto -mtune=cortex-a73 -funroll-loops  -ffast-math --cuda-path=/dev/null
