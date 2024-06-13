@@ -352,7 +352,6 @@ print_task(struct seq_file *m, struct rq *rq, struct task_struct *p)
 	SEQ_printf(m, "%15s %5d %9Ld.%06ld %c %9Ld.%06ld %9Ld.%06ld %9Ld.%06ld %9Ld %5d ",
 		p->comm, task_pid_nr(p),
 		SPLIT_NS(p->se.vruntime),
-		entity_eligible(cfs_rq_of(&p->se), &p->se) ? 'E' : 'N',
 		SPLIT_NS(p->se.deadline),
 		SPLIT_NS(p->se.slice),
 		SPLIT_NS(p->se.sum_exec_runtime),
@@ -654,7 +653,6 @@ static void sched_debug_header(struct seq_file *m)
 #define PN(x) \
 	SEQ_printf(m, "  .%-40s: %Ld.%06ld\n", #x, SPLIT_NS(x))
 	PN(sysctl_sched_min_granularity);
-	P(sysctl_sched_child_runs_first);
 #ifdef CONFIG_SCHED_WALT
 	P(sched_init_task_load_windows);
 	P(sched_ravg_window);
