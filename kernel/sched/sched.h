@@ -93,6 +93,8 @@ struct cpuidle_state;
 
 #define TASK_BITS (PID_MAX_DEFAULT + BITS_PER_LONG)
 
+unsigned long apply_dvfs_headroom(unsigned long util, int cpu, bool tapered);
+
 extern __read_mostly bool sched_predl;
 extern unsigned int sched_capacity_margin_up[CPU_NR];
 extern unsigned int sched_capacity_margin_down[CPU_NR];
