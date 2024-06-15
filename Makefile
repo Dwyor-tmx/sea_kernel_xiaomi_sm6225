@@ -761,18 +761,43 @@ KBUILD_CFLAGS   += -O3 -march=armv8-a+lse+crypto+crc+dotprod -fno-stack-protecto
 KBUILD_CFLAGS   += -fvectorize -fslp-vectorize -finline-functions -fmerge-all-constants
 KBUILD_AFLAGS   += -O3 -march=armv8-a+lse+crypto+crc+dotprod
 ifdef CONFIG_POLLY_CLANG
-KBUILD_CFLAGS  += -mllvm -polly \
-       -mllvm -polly-ast-use-context \
-       -mllvm -polly-invariant-load-hoisting \
-       -mllvm -polly-run-inliner \
-       -mllvm -polly-vectorizer=stripmine 
+KBUILD_CFLAGS	+= -mllvm -polly \
+		   -mllvm -polly-detect-keep-going \
+           -mllvm -polly-dependences-analysis-type=value-based \
+           -mllvm -polly-dependences-computeout=0 \
+           -mllvm -polly-enable-delicm \
+           -mllvm -polly-invariant-load-hoisting \
+           -mllvm -polly-loopfusion-greedy \
+           -mllvm -polly-num-threads=0 \
+           -mllvm -polly-omp-backend=LLVM \
+           -mllvm -polly-optimizer=isl \
+           -mllvm -polly-postopts \
+           -mllvm -polly-reschedule \
+           -mllvm -polly-run-dce \
+           -mllvm -polly-run-inliner \
+           -mllvm -polly-scheduling-chunksize=1 \
+           -mllvm -polly-scheduling=dynamic \
+           -mllvm -polly-tiling \
+           -mllvm -polly-vectorizer=stripmine
 ifeq ($(shell test $(CONFIG_CLANG_VERSION) -gt 130000; echo $$?),0)
-KBUILD_CFLAGS  += -mllvm -polly-loopfusion-greedy=1 \
-       -mllvm -polly-reschedule=1 \
-       -mllvm -polly-postopts=1
-else
+KBUILD_CFLAGS	+= -mllvm -enable-interleaved-mem-accesses \
+		           -mllvm -extra-vectorizer-passes \
+		           -mllvm -enable-cond-stores-vec \
+		           -mllvm -slp-vectorize-hor-store \
+		           -mllvm -enable-loopinterchange \
+		           -mllvm -enable-loop-distribute \
+		           -mllvm -enable-unroll-and-jam \
+		           -mllvm -enable-loop-flatten \
+		           -mllvm -unroll-runtime-multi-exit \
+		           -mllvm -aggressive-ext-opt \
+		           -mllvm -adce-remove-loops \
+		           -mllvm -enable-ext-tsp-block-placement \
+		           -mllvm -enable-gvn-hoist \
+		           -mllvm -enable-dfa-jump-thread \
+		           -mllvm -vectorizer-maximize-bandwidth
+	else
 KBUILD_CFLAGS  += -mllvm -polly-opt-fusion=max
-endif
+endif			   
 # Polly may optimise loops with dead paths beyound what the linker
 # can understand. This may negate the effect of the linker's DCE
 # so we tell Polly to perfom proven DCE on the loops it optimises
