@@ -2737,7 +2737,6 @@ static void __ttwu_queue_wakelist(struct task_struct *p, int cpu, int wake_flags
 
 	p->sched_remote_wakeup = !!(wake_flags & WF_MIGRATED);
 
-	WRITE_ONCE(rq->ttwu_pending, 1);
 	if (llist_add(&p->wake_entry, &cpu_rq(cpu)->wake_list)) {
 		if (!set_nr_if_polling(rq->idle))
 			smp_send_reschedule(cpu);
@@ -2808,14 +2807,13 @@ static bool ttwu_queue_wakelist(struct task_struct *p, int cpu, int wake_flags)
 			return false;
 
 		sched_clock_cpu(cpu); /* Sync clocks across CPUs */
-		__ttwu_queue_wakelist(p, cpu, wake_flags);
+		ttwu_queue_wakelist(p, cpu, wake_flags);
 		return true;
 	}
 
 	return false;
 }
 #endif
-#endif /* CONFIG_SMP */
 
 static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)
 {
@@ -2826,7 +2824,6 @@ static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)
 #if SCHED_FEAT_TTWU_QUEUE
 	if (ttwu_queue_wakelist(p, cpu, wake_flags))
 		return;
-#endif
 #endif
 
 	rq_lock(rq, &rf);
