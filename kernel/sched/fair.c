@@ -7248,7 +7248,7 @@ select_idle_capacity(struct task_struct *p, struct sched_domain *sd, int target)
 	struct cpumask *cpus;
 
 	cpus = this_cpu_cpumask_var_ptr(select_idle_mask);
-
+cpumask_and(cpus, sched_domain_span(sd), p->cpus_ptr);
 	task_util = task_util_est(p);
 	util_min = uclamp_eff_value(p, UCLAMP_MIN);
 	util_max = uclamp_eff_value(p, UCLAMP_MAX);
