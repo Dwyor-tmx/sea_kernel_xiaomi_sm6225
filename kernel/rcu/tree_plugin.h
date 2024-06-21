@@ -1722,54 +1722,6 @@ static int rcu_oom_notify(struct notifier_block *self,
 	atomic_dec(&oom_callback_count);
 
 	return NOTIFY_OK;
-#endif /* #else #if !defined(CONFIG_RCU_FAST_NO_HZ) */
-
-#ifdef CONFIG_RCU_NOCB_CPU
-
-/*
- * Offload callback processing from the boot-time-specified set of CPUs
- * specified by rcu_nocb_mask.  For the CPUs in the set, there are kthreads
- * created that pull the callbacks from the corresponding CPU, wait for
- * a grace period to elapse, and invoke the callbacks.  These kthreads
- * are organized into GP kthreads, which manage incoming callbacks, wait for
- * grace periods, and awaken CB kthreads, and the CB kthreads, which only
- * invoke callbacks.  Each GP kthread invokes its own CBs.  The no-CBs CPUs
- * do a wake_up() on their GP kthread when they insert a callback into any
- * empty list, unless the rcu_nocb_poll boot parameter has been specified,
- * in which case each kthread actively polls its CPU.  (Which isn't so great
- * for energy efficiency, but which does reduce RCU's overhead on that CPU.)
- *
- * This is intended to be used in conjunction with Frederic Weisbecker's
- * adaptive-idle work, which would seriously reduce OS jitter on CPUs
- * running CPU-bound user-mode computations.
- *
- * Offloading of callbacks can also be used as an energy-efficiency
- * measure because CPUs with no RCU callbacks queued are more aggressive
- * about entering dyntick-idle mode.
- */
-
-
-/*
- * Parse the boot-time rcu_nocb_mask CPU list from the kernel parameters.
- * The string after the "rcu_nocbs=" is either "all" for all CPUs, or a
- * comma-separated list of CPUs and/or CPU ranges.  If an invalid list is
- * given, a warning is emitted and all CPUs are offloaded.
- */
-
-static bool rcu_nocb_is_setup;
-
-static int __init rcu_nocb_setup(char *str)
-{
-	alloc_bootmem_cpumask_var(&rcu_nocb_mask);
-	if (!strcasecmp(str, "all"))
-		cpumask_setall(rcu_nocb_mask);
-	else
-		if (cpulist_parse(str, rcu_nocb_mask)) {
-			pr_warn("rcu_nocbs= bad CPU range, all CPUs set\n");
-			cpumask_setall(rcu_nocb_mask);
-		}
-	rcu_nocb_is_setup = true;
-	return 1;
 }
 
 static struct notifier_block rcu_oom_nb = {
@@ -2443,21 +2395,10 @@ void __init rcu_init_nohz(void)
 	int cpu;
 	bool need_rcu_nocb_mask = false;
 	struct rcu_state *rsp;
-	bool offload_all = false;
-	struct rcu_data *rdp;
-
-#if defined(CONFIG_RCU_NOCB_CPU_DEFAULT_ALL)
-	if (!rcu_nocb_is_setup) {
-		need_rcu_nocb_mask = true;
-		offload_all = true;
-	}
-#endif /* #if defined(CONFIG_RCU_NOCB_CPU_DEFAULT_ALL) */
 
 #if defined(CONFIG_NO_HZ_FULL)
-	if (tick_nohz_full_running && cpumask_weight(tick_nohz_full_mask)) {
+	if (tick_nohz_full_running && cpumask_weight(tick_nohz_full_mask))
 		need_rcu_nocb_mask = true;
-		offload_all = false; /* NO_HZ_FULL has its own mask. */
-	}
 #endif /* #if defined(CONFIG_NO_HZ_FULL) */
 
 	if (!cpumask_available(rcu_nocb_mask) && need_rcu_nocb_mask) {
@@ -2473,12 +2414,6 @@ void __init rcu_init_nohz(void)
 	if (tick_nohz_full_running)
 		cpumask_or(rcu_nocb_mask, rcu_nocb_mask, tick_nohz_full_mask);
 #endif /* #if defined(CONFIG_NO_HZ_FULL) */
-
-	if (offload_all)
-		cpumask_setall(rcu_nocb_mask);
-
-	if (register_shrinker(&lazy_rcu_shrinker))
-		pr_err("Failed to register lazy_rcu shrinker!\n");
 
 	if (!cpumask_subset(rcu_nocb_mask, cpu_possible_mask)) {
 		pr_info("\tNote: kernel parameter 'rcu_nocbs=', 'nohz_full', or 'isolcpus=' contains nonexistent CPUs.\n");
