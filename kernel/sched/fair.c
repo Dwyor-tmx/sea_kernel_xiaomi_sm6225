@@ -5926,7 +5926,6 @@ static inline void hrtick_update(struct rq *rq)
 
 #ifdef CONFIG_SMP
 static unsigned long capacity_of(int cpu);
-#ifdef CONFIG_SCHED_WALT
 bool __cpu_overutilized(int cpu, int delta)
 {
 	return (capacity_orig_of(cpu) * 1024) <
@@ -5936,16 +5935,11 @@ bool __cpu_overutilized(int cpu, int delta)
 bool cpu_overutilized(int cpu)
 {
 	return __cpu_overutilized(cpu, 0);
-}
-#else
-bool __cpu_overutilized(int cpu, int delta)
-{
 	unsigned long rq_util_min = uclamp_rq_get(cpu_rq(cpu), UCLAMP_MIN);
 	unsigned long rq_util_max = uclamp_rq_get(cpu_rq(cpu), UCLAMP_MAX);
 
 	return !util_fits_cpu(cpu_util(cpu), rq_util_min, rq_util_max, cpu);
 }
-#endif
 
 #ifdef CONFIG_SCHED_WALT
 static bool sd_overutilized(struct sched_domain *sd)
