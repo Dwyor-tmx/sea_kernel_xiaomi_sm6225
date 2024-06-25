@@ -26,7 +26,7 @@ export KBUILD_BUILD_HOST=ubuntu
 # Prepare
 make -j$(nproc --all) O=out ARCH=arm64 CC=$(pwd)/clang/bin/clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 vendor/fog-perf_defconfig
 # Execute
-make -j$(nproc --all) O=out ARCH=arm64 CC=$(pwd)/clang/bin/clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1
+make -j$(nproc --all) O=out ARCH=arm64 CC=$(pwd)/clang/bin/clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 2>&1 > output.log 
 
 # Package
 git clone --depth=1 https://github.com/ardia-kun/AnyKernel3-680 -b ksu AnyKernel3
@@ -34,8 +34,8 @@ cp -R out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
 # Zip it and upload it
 cd AnyKernel3
 zip -r9 sdm680-kimihime-kernel+KSU-"$BUILDDATE" . -x ".git*" -x "README.md" -x "*.zip"
-curl -T sdm680-kimihime-kernel+KSU-"$BUILDDATE".zip -u :e3e81e86-d14d-4354-b989-db2c8f7e237f https://pixeldrain.com/api/file/
+//curl -T sdm680-kimihime-kernel+KSU-"$BUILDDATE".zip -u :e3e81e86-d14d-4354-b989-db2c8f7e237f https://pixeldrain.com/api/file/
 # finish
 cd ..
-rm -rf clang-llvm/ AnyKernel3/
+
 echo "Build finished"

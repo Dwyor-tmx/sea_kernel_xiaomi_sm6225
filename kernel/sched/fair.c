@@ -126,8 +126,8 @@ int __weak arch_asym_cpu_priority(int cpu)
  * (default: ~5%)
  */
 #define capacity_greater(cap1, cap2) ((cap1) * 1024 > (cap2) * 1078)
+#define fits_capacity(cap, max)	((cap) * 1280 < (max) * 1024)
 #endif
-
 #ifdef CONFIG_CFS_BANDWIDTH
 /*
  * Amount of runtime to allocate from global (tg) to local (per-cfs_rq) pool
@@ -763,7 +763,7 @@ int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	if (!sched_feat(ENFORCE_ELIGIBILITY))
 		return 1;
 
-	return vruntime_eligible(cfs_rq, se->vruntime);
+	return 1;
 }
 
 static u64 __update_min_vruntime(struct cfs_rq *cfs_rq, u64 vruntime)
@@ -4129,13 +4129,10 @@ static void detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 	trace_sched_load_cfs_rq(cfs_rq);
 }
 
-/*
- * Optional action to be done while updating the load average
- */
-#define UPDATE_TG	0x1
-#define SKIP_AGE_LOAD	0x2
-#define DO_ATTACH	0x4
-#define DO_DETACH	0x8
+#define UPDATE_TG	0x0
+#define SKIP_AGE_LOAD	0x0
+#define DO_ATTACH	0x0
+#define DO_DETACH	0x0
 
 /* Update task and its cfs_rq load average */
 static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
@@ -4573,6 +4570,7 @@ static inline int task_fits_cpu(struct task_struct *p, int cpu)
 
 static inline bool task_fits_max(struct task_struct *p, int cpu)
 {
+	#ifdef CONFIG_SCHED_WALT
 	unsigned long capacity = capacity_orig_of(cpu);
 	unsigned long max_capacity = cpu_rq(cpu)->rd->max_cpu_capacity.val;
 	unsigned long task_boost = per_task_boost(p);
@@ -4599,11 +4597,12 @@ static inline bool task_fits_max(struct task_struct *p, int cpu)
 
 static inline bool task_demand_fits(struct task_struct *p, int cpu)
 {
+	#ifdef CONFIG_SCHED_WALT
 	unsigned long capacity = capacity_orig_of(cpu);
 	unsigned long max_capacity = cpu_rq(cpu)->rd->max_cpu_capacity.val;
 
 	if (capacity == max_capacity)
-		return true;
+		return true; 
 
         return task_fits_cpu(p, cpu);
 #else
@@ -4675,7 +4674,7 @@ static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
 		rq->misfit_task_load = 0;
 		return;
 	}
-
+#ifdef CONFIG_SCHED_WALT
 	if (task_fits_max(p, cpu_of(rq))) {
 #else
 	if (task_fits_cpu(p, cpu_of(rq))) {
@@ -4690,46 +4689,7 @@ static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
 	 */
 	rq->misfit_task_load = max_t(unsigned long, task_h_load(p), 1);
 }
-
-#else /* CONFIG_SMP */
-
-static inline bool cfs_rq_is_decayed(struct cfs_rq *cfs_rq)
-{
-	return true;
-}
-
-#define UPDATE_TG	0x0
-#define SKIP_AGE_LOAD	0x0
-#define DO_ATTACH	0x0
-#define DO_DETACH	0x0
-
-static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int not_used1)
-{
-	cfs_rq_util_change(cfs_rq, 0);
-}
-
-static inline void remove_entity_load_avg(struct sched_entity *se) {}
-
-static inline void
-attach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {}
-static inline void
-detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
-
-static inline int idle_balance(struct rq *rq, struct rq_flags *rf)
-{
-	return 0;
-}
-
-static inline void
-util_est_enqueue(struct cfs_rq *cfs_rq, struct task_struct *p) {}
-
-static inline void
-util_est_dequeue(struct cfs_rq *cfs_rq, struct task_struct *p,
-		 bool task_sleep) {}
-static inline void update_misfit_status(struct task_struct *p, struct rq *rq) {}
-
-#endif /* CONFIG_SMP */
-
+#endif
 static void
 place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
@@ -5966,7 +5926,7 @@ static inline void hrtick_update(struct rq *rq)
 
 #ifdef CONFIG_SMP
 static unsigned long capacity_of(int cpu);
-
+#ifdef CONFIG_SCHED_WALT
 bool __cpu_overutilized(int cpu, int delta)
 {
 	return (capacity_orig_of(cpu) * 1024) <
@@ -5978,7 +5938,7 @@ bool cpu_overutilized(int cpu)
 	return __cpu_overutilized(cpu, 0);
 }
 #else
-bool cpu_overutilized(int cpu)
+bool __cpu_overutilized(int cpu, int delta)
 {
 	unsigned long rq_util_min = uclamp_rq_get(cpu_rq(cpu), UCLAMP_MIN);
 	unsigned long rq_util_max = uclamp_rq_get(cpu_rq(cpu), UCLAMP_MAX);
@@ -6004,9 +5964,10 @@ static void clear_sd_overutilized(struct sched_domain *sd)
 	trace_sched_overutilized(sd, sd->shared->overutilized, false);
 	sd->shared->overutilized = false;
 }
-
+#endif
 static inline void update_overutilized_status(struct rq *rq)
 {
+#ifdef CONFIG_SCHED_WALT
 	struct sched_domain *sd;
 
 	rcu_read_lock();
@@ -6015,6 +5976,11 @@ static inline void update_overutilized_status(struct rq *rq)
 	    cpu_overutilized(rq->cpu))
 		set_sd_overutilized(sd);
 	rcu_read_unlock();
+#else
+	if (!READ_ONCE(rq->rd->overutilized) && cpu_overutilized(rq->cpu)) {
+		WRITE_ONCE(rq->rd->overutilized, SG_OVERUTILIZED);
+	}
+#endif
 }
 #else
 static inline void update_overutilized_status(struct rq *rq) { }
@@ -7266,7 +7232,7 @@ select_idle_capacity(struct task_struct *p, struct sched_domain *sd, int target)
 	struct cpumask *cpus;
 
 	cpus = this_cpu_cpumask_var_ptr(select_idle_mask);
-	cpumask_and(cpus, sched_domain_span(sd), &p->cpus_allowed);
+	cpumask_and(cpus, sched_domain_span(sd), p->cpus_ptr);
 
 	task_util = task_util_est(p);
 	util_min = uclamp_eff_value(p, UCLAMP_MIN);
@@ -8169,7 +8135,7 @@ static int wake_cap(struct task_struct *p, int cpu, int prev_cpu)
 		return 0;
 
 	min_cap = min(capacity_orig_of(prev_cpu), capacity_orig_of(cpu));
-	max_cap = cpu_rq(cpu)->rd->max_cpu_capacity.val;
+	max_cap = cpu_rq(cpu)->rd->max_cpu_capacity;
 
 	/* Minimum capacity is close to max, no need to abort wake_affine */
 	if (max_cap - min_cap < max_cap >> 3)
@@ -8632,7 +8598,6 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	}
 
 	__cpumask_set_cpu(prev_cpu, candidates);
-	compute_energy_change(p, pd, prev_cpu, candidates, energy);
 	__cpumask_clear_cpu(prev_cpu, candidates);
 
 	if (cpumask_test_cpu(prev_cpu, p->cpus_ptr))
@@ -9440,7 +9405,7 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 
 	/* Record that we found atleast one task that could run on dst_cpu */
 	env->flags &= ~LBF_ALL_PINNED;
-
+#ifdef CONFIG_SCHED_WALT
 	if (static_branch_unlikely(&sched_energy_present)) {
 		struct root_domain *rd = env->dst_rq->rd;
 
@@ -9459,18 +9424,16 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 		}
 	}
 
-#ifdef CONFIG_SCHED_WALT
 	if (env->flags & LBF_IGNORE_PREFERRED_CLUSTER_TASKS &&
 			 !preferred_cluster(cpu_rq(env->dst_cpu)->cluster, p))
 		return 0;
-#endif
+
 
 	/* Don't detach task if it doesn't fit on the destination */
 	if (env->flags & LBF_IGNORE_BIG_TASKS &&
 		!task_fits_max(p, env->dst_cpu))
 		return 0;
 
-#ifdef CONFIG_SCHED_WALT
 	/* Don't detach task if it is under active migration */
 	if (env->src_rq->push_task == p)
 		return 0;
@@ -10735,7 +10698,8 @@ next_group:
 		/* update overload indicator if we are at root domain */
 		WRITE_ONCE(rd->overload, sg_status & SG_OVERLOAD);
 	}
-
+void clear_sd_overutilized(struct sched_domain *sd);
+#ifdef CONFIG_SCHED_WALT
 	if (sg_status & SG_OVERUTILIZED)
 		set_sd_overutilized(env->sd);
 	else
@@ -10775,7 +10739,7 @@ next_group:
 	    sds->total_capacity * 1024 < sds->total_util *
 			 sched_capacity_margin_up[group_first_cpu(sds->local)])
 		set_sd_overutilized(env->sd->parent);
-
+#endif
 }
 
 /**
@@ -11069,11 +11033,15 @@ static struct sched_group *find_busiest_group(struct lb_env *env)
 	if (sched_energy_enabled()) {
 		struct root_domain *rd = env->dst_rq->rd;
 
+#ifdef CONFIG_SCHED_WALT
 		if (rcu_dereference(rd->pd) && !sd_overutilized(env->sd)) {
+#else
+		if (rcu_dereference(rd->pd) && !READ_ONCE(rd->overutilized)) {
+#endif
 			int cpu_local, cpu_busiest;
 			unsigned long capacity_local, capacity_busiest;
 
-			if (env->idle != CPU_NEWLY_IDLE && !env->prefer_spread)
+			if (env->idle != CPU_NEWLY_IDLE)
 				goto out_balanced;
 
 			if (!sds.local || !sds.busiest)
@@ -11741,7 +11709,7 @@ out:
 				 busiest ? busiest->nr_running : 0,
 				 env.imbalance, env.flags, ld_moved,
 				 sd->balance_interval, active_balance,
-				 sd_overutilized(sd), env.prefer_spread);
+				READ_ONCE(this_rq->rd->overutilized), env.prefer_spread);
 	return ld_moved;
 }
 
@@ -11769,6 +11737,7 @@ get_sd_balance_interval(struct sched_domain *sd, int cpu_busy)
 	 * we want to balance as soon as practically possible, so
 	 * we return an interval of zero, except for busy balance.
 	 */
+#ifdef CONFIG_SCHED_WALT
 	if (sd_overutilized(sd) && !cpu_busy) {
 		/* we know the root is overutilized, let's check for a misfit task */
 		for_each_cpu(cpu, sched_domain_span(sd)) {
@@ -11776,6 +11745,7 @@ get_sd_balance_interval(struct sched_domain *sd, int cpu_busy)
 				return 1;
 		}
 	}
+#endif
 	return interval;
 }
 

@@ -317,9 +317,7 @@ static void sched_energy_set(bool has_eas)
  * EAS can be used on a root domain if it meets all the following conditions:
  *    1. an Energy Model (EM) is available;
  *    2. the SD_ASYM_CPUCAPACITY flag is set in the sched_domain hierarchy.
- *    3. no SMT is detected.
- *    4. the EM complexity is low enough to keep scheduling overheads low;
- *    5. schedutil is driving the frequency of all CPUs of the rd;
+ *    3. the EM complexity is low enough to keep scheduling overheads low;
  *
  * The complexity of the Energy Model is defined as:
  *
@@ -349,7 +347,14 @@ static bool build_perf_domains(const struct cpumask *cpu_map)
 	if (!sysctl_sched_energy_aware)
 		goto free;
 
-	/* EAS is enabled for asymmetric CPU capacity topologies. */
+	/*
+	 * EAS gets disabled when there are no asymmetric capacity
+	 * CPUs in the system. For example, all big CPUs are
+	 * hotplugged out on a b.L system. We want EAS enabled
+	 * all the time to get both power and perf benefits. Apply
+	 * this policy when WALT is enabled.
+	 */
+#ifndef CONFIG_SCHED_WALT
 	if (!per_cpu(sd_asym_cpucapacity, cpu)) {
 		if (sched_debug()) {
 			pr_info("rd %*pbl: CPUs do not have asymmetric capacities\n",
@@ -357,14 +362,7 @@ static bool build_perf_domains(const struct cpumask *cpu_map)
 		}
 		goto free;
 	}
-
-	/* EAS definitely does *not* handle SMT */
-	if (sched_smt_active()) {
-		pr_warn("rd %*pbl: Disabling EAS, SMT is not supported\n",
-			cpumask_pr_args(cpu_map));
-		goto free;
-	}
-
+#endif
 	for_each_cpu(i, cpu_map) {
 		/* Skip already covered CPUs. */
 		if (find_pd(pd, i))
@@ -503,6 +501,7 @@ static int init_rootdomain(struct root_domain *rd)
 	if (cpupri_init(&rd->cpupri) != 0)
 		goto free_cpudl;
 
+#ifdef CONFIG_SCHED_WALT
 	rd->max_cap_orig_cpu = rd->min_cap_orig_cpu = -1;
 	rd->mid_cap_orig_cpu = -1;
 #endif
@@ -646,21 +645,6 @@ static void update_top_cache_domain(int cpu)
 	rcu_assign_pointer(per_cpu(sd_asym_packing, cpu), sd);
 
 	sd = lowest_flag_domain(cpu, SD_ASYM_CPUCAPACITY);
-	/*
-	 * EAS gets disabled when there are no asymmetric capacity
-	 * CPUs in the system. For example, all big CPUs are
-	 * hotplugged out on a b.L system. We want EAS enabled
-	 * all the time to get both power and perf benefits. So,
-	 * lets assign sd_asym_cpucapacity to the only available
-	 * sched domain. This is also important for a single cluster
-	 * systems which wants to use EAS.
-	 *
-	 * Setting sd_asym_cpucapacity() to a sched domain which
-	 * has all symmetric capacity CPUs is technically incorrect but
-	 * works well for us in getting EAS enabled all the time.
-	 */
-	if (!sd)
-		sd = cpu_rq(cpu)->sd;
 
 	rcu_assign_pointer(per_cpu(sd_asym_cpucapacity, cpu), sd);
 }
@@ -1153,17 +1137,21 @@ build_sched_groups(struct sched_domain *sd, int cpu)
 void init_sched_groups_capacity(int cpu, struct sched_domain *sd)
 {
 	struct sched_group *sg = sd->groups;
+#ifdef CONFIG_SCHED_WALT
 	cpumask_t avail_mask;
-
+#endif
 	WARN_ON(!sg);
 
 	do {
 		int cpu, max_cpu = -1;
 
+#ifdef CONFIG_SCHED_WALT
 		cpumask_andnot(&avail_mask, sched_group_span(sg),
 							cpu_isolated_mask);
 		sg->group_weight = cpumask_weight(&avail_mask);
-
+#else
+		sg->group_weight = cpumask_weight(sched_group_span(sg));
+#endif
 		if (!(sd->flags & SD_ASYM_PACKING))
 			goto next;
 
@@ -1999,6 +1987,7 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 	/* Attach the domains */
 	rcu_read_lock();
 	for_each_cpu(i, cpu_map) {
+#ifdef CONFIG_SCHED_WALT
 		int max_cpu = READ_ONCE(d.rd->max_cap_orig_cpu);
 		int min_cpu = READ_ONCE(d.rd->min_cap_orig_cpu);
 #endif
@@ -2017,10 +2006,11 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 		if ((min_cpu < 0) || (arch_scale_cpu_capacity(i) <
 				arch_scale_cpu_capacity(min_cpu)))
 			WRITE_ONCE(d.rd->min_cap_orig_cpu, i);
-
+#endif
 		cpu_attach_domain(sd, d.rd, i);
 	}
 
+#ifdef CONFIG_SCHED_WALT
 	/* set the mid capacity cpu (assumes only 3 capacities) */
 	for_each_cpu(i, cpu_map) {
 		int max_cpu = READ_ONCE(d.rd->max_cap_orig_cpu);
@@ -2044,7 +2034,7 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 		d.rd->max_cpu_capacity.cpu = d.rd->max_cap_orig_cpu;
 		d.rd->max_cpu_capacity.val = arch_scale_cpu_capacity(d.rd->max_cap_orig_cpu);
 	}
-
+#endif
 	rcu_read_unlock();
 
 	if (has_asym)
